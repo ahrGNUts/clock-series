@@ -279,8 +279,7 @@ pub fn draw_scrub_controls(
     result
 }
 
-/// Draw the DST status panel
-#[allow(dead_code)]
+/// Draw the DST status panel (shown when DST transition is in viewport)
 pub fn draw_dst_status(ctx: &egui::Context, time_data: &TimeData) {
     egui::Window::new("DST Status")
         .collapsible(true)
@@ -400,5 +399,37 @@ pub fn draw_timezone_bar(ctx: &egui::Context, time_data: &TimeData) -> bool {
         });
 
     clicked
+}
+
+/// Draw a toast notification that auto-dismisses
+pub fn draw_toast(ctx: &egui::Context, message: &str, elapsed_secs: f32) {
+    // Fade out during last 0.5 seconds
+    let alpha = if elapsed_secs > 2.5 {
+        1.0 - (elapsed_secs - 2.5) * 2.0
+    } else {
+        1.0
+    };
+
+    if alpha <= 0.0 {
+        return;
+    }
+
+    let alpha_u8 = (alpha * 255.0) as u8;
+
+    egui::Area::new("toast")
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -80.0])
+        .show(ctx, |ui| {
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgba_unmultiplied(60, 40, 30, alpha_u8))
+                .rounding(8.0)
+                .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(message)
+                            .color(egui::Color32::from_rgba_unmultiplied(255, 200, 150, alpha_u8))
+                            .size(14.0),
+                    );
+                });
+        });
 }
 

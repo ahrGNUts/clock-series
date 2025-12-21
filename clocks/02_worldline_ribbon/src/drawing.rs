@@ -442,3 +442,22 @@ pub fn draw_help_text(draw: &Draw, window_rect: Rect) {
     }
 }
 
+/// Draw the error banner when timezone data is invalid
+pub fn draw_error_banner(draw: &Draw, message: &str, window_rect: Rect) {
+    let banner_height = 40.0;
+    let banner_y = window_rect.top() - 60.0; // Below the TZ bar
+
+    // Background
+    draw.rect()
+        .x_y(0.0, banner_y)
+        .w_h(window_rect.w(), banner_height)
+        .color(srgba(120u8, 40u8, 40u8, 220u8));
+
+    // Text
+    draw.text(message)
+        .x_y(0.0, banner_y)
+        .color(colors::TEXT_PRIMARY)
+        .font_size(14)
+        .w(window_rect.w() - 40.0);
+}
+

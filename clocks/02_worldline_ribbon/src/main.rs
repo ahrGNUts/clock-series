@@ -12,15 +12,19 @@ use chrono_tz::Tz;
 use nannou::prelude::*;
 use nannou_egui::{self, Egui};
 use serde::{Deserialize, Serialize};
-use shared::{compute_time_data, query_dst_transitions, DstTransition, TimeData};
+use shared::{compute_time_data, query_dst_transitions, DstTransition, TimeData, Validity};
 
 use crate::drawing::{
-    colors, draw_help_text, draw_ribbon, draw_time_display, draw_zoom_indicator, RibbonLayout,
+    colors, draw_error_banner, draw_help_text, draw_ribbon, draw_time_display, draw_zoom_indicator,
+    RibbonLayout,
 };
 use crate::ribbon::{
     format_cursor_time, RibbonViewport, Tick, DEFAULT_ZOOM_INDEX, ZOOM_LEVELS,
 };
-use crate::ui::{draw_scrub_controls, draw_timezone_bar, draw_timezone_picker, PickerState};
+use crate::ui::{
+    draw_dst_status, draw_scrub_controls, draw_toast, draw_timezone_bar, draw_timezone_picker,
+    PickerState,
+};
 
 const CLOCK_NAME: &str = "worldline_ribbon";
 const DEFAULT_TZ: &str = "America/Los_Angeles";
@@ -129,6 +133,14 @@ struct Model {
     drag_state: DragState,
     /// Scroll state for trackpad gestures (axis locking)
     scroll_state: ScrollState,
+    /// Error message to display (if any)
+    error_message: Option<String>,
+    /// Toast message with display start time (auto-dismisses after timeout)
+    toast: Option<(String, std::time::Instant)>,
+    /// Last valid timezone (for reverting on invalid selection)
+    last_valid_tz: Tz,
+    /// Whether a DST transition is currently visible in the viewport
+    transition_visible: bool,
     /// egui integration
     egui: Egui,
 }
@@ -268,6 +280,10 @@ fn model(app: &App) -> Model {
         last_dst_query_instant: Some(now),
         drag_state: DragState::default(),
         scroll_state: ScrollState::default(),
+        error_message: None,
+        toast: None,
+        last_valid_tz: selected_tz,
+        transition_visible: false,
         egui,
     }
 }
@@ -278,6 +294,16 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     // Update time data
     model.time_data = shared::compute_time_data_at(model.selected_tz, center);
 
+    // Check for validity issues
+    if model.time_data.validity != Validity::Ok {
+        model.error_message = Some(match model.time_data.validity {
+            Validity::TzMissing => "Time zone data missing. Showing UTC.".to_string(),
+            Validity::TzDataStale => "Time zone data may be outdated.".to_string(),
+            Validity::Unknown => "Unknown time zone issue.".to_string(),
+            Validity::Ok => unreachable!(),
+        });
+    }
+
     // Re-query DST transitions if center has moved significantly (more than 1 hour)
     let should_requery = match model.last_dst_query_instant {
         Some(last) => (center - last).num_hours().abs() > 1,
@@ -287,6 +313,21 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     if should_requery {
         model.dst_transitions = query_dst_transitions(model.selected_tz, center, 7);
         model.last_dst_query_instant = Some(center);
+    }
+
+    // Check if any DST transition is visible in the current viewport
+    // Viewport span is approximately window_width * seconds_per_pixel
+    let viewport_half_span = Duration::hours(6); // Conservative estimate
+    model.transition_visible = model.dst_transitions.iter().any(|t| {
+        let delta = (t.instant_utc - center).num_seconds().abs();
+        delta < viewport_half_span.num_seconds()
+    });
+
+    // Auto-dismiss toast after 3 seconds
+    if let Some((_, start_time)) = &model.toast {
+        if start_time.elapsed().as_secs_f32() > 3.0 {
+            model.toast = None;
+        }
     }
 
     // Begin egui frame
@@ -322,13 +363,25 @@ fn update(_app: &App, model: &mut Model, update: Update) {
         &mut reduced_motion,
     );
 
+    // Show DST status card when a transition is visible in viewport
+    if model.transition_visible {
+        draw_dst_status(&ctx, &time_data_clone);
+    }
+
+    // Draw toast notification if active
+    if let Some((ref message, start_time)) = model.toast {
+        draw_toast(&ctx, message, start_time.elapsed().as_secs_f32());
+    }
+
     // Now apply UI results
     drop(ctx);
 
     // Handle picker result
     if let Some(tz) = picker_result.selected_tz {
         model.selected_tz = tz;
+        model.last_valid_tz = tz; // Track last valid selection
         model.time_data = compute_time_data(tz);
+        model.error_message = None; // Clear any error on successful selection
         // Invalidate DST cache
         model.last_dst_query_instant = None;
         save_config(model);
@@ -410,6 +463,11 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
     // Draw help text
     draw_help_text(&draw, window_rect);
+
+    // Draw error banner if needed
+    if let Some(ref message) = model.error_message {
+        draw_error_banner(&draw, message, window_rect);
+    }
 
     // Render to frame
     draw.to_frame(app, &frame).unwrap();
@@ -620,5 +678,13 @@ fn mouse_wheel(_app: &App, model: &mut Model, delta: MouseScrollDelta, phase: To
 fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {
     // Let egui handle raw events
     model.egui.handle_raw_event(event);
+
+    // Resync time data when window regains focus (in case app was backgrounded)
+    if let nannou::winit::event::WindowEvent::Focused(true) = event {
+        // Invalidate DST cache to force refresh
+        model.last_dst_query_instant = None;
+        // Refresh time data immediately
+        model.time_data = shared::compute_time_data_at(model.selected_tz, model.center_instant());
+    }
 }
 
