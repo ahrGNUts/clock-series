@@ -2280,6 +2280,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "temporal_topography"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "nannou",
+ "nannou_egui",
+ "serde",
+ "shared",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
