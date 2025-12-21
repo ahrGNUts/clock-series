@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "shared",
+    "clocks/01_precision_instrument",
+]
+
+[workspace.dependencies]
+nannou = "0.19"
+nannou_egui = "0.19"
+chrono = "0.4"
+chrono-tz = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+directories = "5.0"
+
