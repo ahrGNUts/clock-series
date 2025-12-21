@@ -322,6 +322,65 @@ pub fn search_timezones(query: &str) -> Vec<Tz> {
         .collect()
 }
 
+/// A DST transition with detailed information for ribbon visualization
+#[derive(Debug, Clone)]
+pub struct DstTransition {
+    /// When the transition occurs (UTC)
+    pub instant_utc: DateTime<Utc>,
+    /// Offset change in minutes (positive = spring forward, negative = fall back)
+    pub delta_minutes: i32,
+    /// Local wall time just before the transition
+    pub local_wall_time_before: String,
+    /// Local wall time just after the transition
+    pub local_wall_time_after: String,
+}
+
+/// Query DST transitions within a time range around a center instant
+///
+/// Returns all DST transitions that occur within `±range_days` of `center`.
+/// Useful for ribbon visualizations that need to show DST seams.
+pub fn query_dst_transitions(tz: Tz, center: DateTime<Utc>, range_days: i64) -> Vec<DstTransition> {
+    let mut transitions = Vec::new();
+    let range_duration = Duration::days(range_days);
+    let start = center - range_duration;
+    let end = center + range_duration;
+    
+    // Sample at hourly intervals to find offset changes
+    let mut current = start;
+    let mut prev_offset = current.with_timezone(&tz).offset().fix().local_minus_utc();
+    
+    while current < end {
+        let next = current + Duration::hours(1);
+        let next_local = next.with_timezone(&tz);
+        let next_offset = next_local.offset().fix().local_minus_utc();
+        
+        if next_offset != prev_offset {
+            // Found a transition - narrow down to exact time
+            let transition_instant = find_transition_time(tz, current, next, prev_offset);
+            let delta_minutes = (next_offset - prev_offset) / 60;
+            
+            // Get wall times before and after
+            let before_instant = transition_instant - Duration::seconds(1);
+            let after_instant = transition_instant + Duration::seconds(1);
+            let before_local = before_instant.with_timezone(&tz);
+            let after_local = after_instant.with_timezone(&tz);
+            
+            transitions.push(DstTransition {
+                instant_utc: transition_instant,
+                delta_minutes,
+                local_wall_time_before: before_local.format("%Y-%m-%d %H:%M:%S").to_string(),
+                local_wall_time_after: after_local.format("%Y-%m-%d %H:%M:%S").to_string(),
+            });
+            
+            prev_offset = next_offset;
+        }
+        
+        current = next;
+    }
+    
+    transitions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
