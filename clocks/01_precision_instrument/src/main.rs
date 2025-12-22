@@ -6,13 +6,18 @@
 mod drawing;
 mod ui;
 
+use std::time::Instant;
+
 use chrono_tz::Tz;
 use nannou::prelude::*;
 use nannou_egui::{self, Egui};
 use serde::{Deserialize, Serialize};
 use shared::{compute_time_data, TimeData, Validity};
 
-use crate::drawing::{colors, draw_calibration_ring, draw_error_banner, draw_primary_readout, Layout};
+use crate::drawing::{
+    colors, draw_calibration_ring, draw_error_banner, draw_primary_readout, draw_toasts, Layout,
+    ToastMessage,
+};
 use crate::ui::{
     draw_dst_status_card, draw_favorites_chips, draw_settings_panel, draw_timezone_bar,
     draw_timezone_picker, PickerState,
@@ -20,6 +25,7 @@ use crate::ui::{
 
 const CLOCK_NAME: &str = "precision_instrument";
 const DEFAULT_TZ: &str = "America/Los_Angeles";
+const TOAST_DURATION_SECS: f32 = 3.0;
 
 fn main() {
     nannou::app(model).update(update).run();
@@ -64,6 +70,17 @@ struct Model {
     error_message: Option<String>,
     /// egui integration
     egui: Egui,
+    /// Current mouse position
+    mouse_pos: Point2,
+    /// Active toast notifications
+    toasts: Vec<ToastMessage>,
+    /// Whether window is focused (for resync)
+    is_focused: bool,
+    /// Layout info for hover detection
+    #[allow(dead_code)]
+    ring_center: Point2,
+    #[allow(dead_code)]
+    ring_radius: f32,
 }
 
 fn save_config(model: &Model) {
@@ -85,7 +102,18 @@ fn toggle_favorite(favorites: &mut Vec<Tz>, tz: Tz) {
     }
 }
 
+fn add_toast(model: &mut Model, message: String) {
+    model.toasts.push(ToastMessage {
+        text: message,
+        created_at: Instant::now(),
+        duration_secs: TOAST_DURATION_SECS,
+    });
+}
+
 fn model(app: &App) -> Model {
+    // Disable default escape-to-close behavior - we handle Escape ourselves
+    app.set_exit_on_escape(false);
+    
     // Create window
     let window_id = app
         .new_window()
@@ -93,6 +121,9 @@ fn model(app: &App) -> Model {
         .size(900, 600)
         .view(view)
         .key_pressed(key_pressed)
+        .mouse_moved(mouse_moved)
+        .focused(window_focused)
+        .unfocused(window_unfocused)
         .raw_event(raw_window_event)
         .build()
         .unwrap();
@@ -130,6 +161,11 @@ fn model(app: &App) -> Model {
         reduced_motion: config.reduced_motion,
         error_message: None,
         egui,
+        mouse_pos: pt2(0.0, 0.0),
+        toasts: Vec::new(),
+        is_focused: true,
+        ring_center: pt2(0.0, 0.0),
+        ring_radius: 0.0,
     }
 }
 
@@ -146,6 +182,11 @@ fn update(_app: &App, model: &mut Model, update: Update) {
             Validity::Ok => unreachable!(),
         });
     }
+
+    // Remove expired toasts
+    model.toasts.retain(|toast| {
+        toast.created_at.elapsed().as_secs_f32() < toast.duration_secs
+    });
 
     // Begin egui frame
     model.egui.set_elapsed_time(update.since_start);
@@ -172,7 +213,7 @@ fn update(_app: &App, model: &mut Model, update: Update) {
     );
 
     // Draw DST status card
-    draw_dst_status_card(&ctx, &time_data_clone);
+    draw_dst_status_card(&ctx, &time_data_clone, current_tz);
 
     // Draw settings panel
     let settings_changed = draw_settings_panel(&ctx, &mut reduced_motion);
@@ -211,6 +252,12 @@ fn update(_app: &App, model: &mut Model, update: Update) {
         model.error_message = None;
         save_config(model);
     }
+
+    // Log accessible description periodically (for screen reader verification)
+    // Only log once per second to avoid spam
+    if model.time_data.second == 0 && model.time_data.second_fraction < 0.02 {
+        println!("{}", model.time_data.accessible_description());
+    }
 }
 
 fn view(app: &App, model: &Model, frame: Frame) {
@@ -228,18 +275,28 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
     // Draw calibration ring (right panel)
     let ring_radius = layout.right_panel.w().min(layout.right_panel.h()) * 0.4;
+    let ring_center = layout.right_panel.xy();
+    
+    // Check if mouse is hovering over ring
+    let mouse_dist = model.mouse_pos.distance(ring_center);
+    let is_hovering_ring = mouse_dist < ring_radius * 1.1 && mouse_dist > ring_radius * 0.3;
+    
     draw_calibration_ring(
         &draw,
         &model.time_data,
-        layout.right_panel.xy(),
+        ring_center,
         ring_radius,
         model.reduced_motion,
+        is_hovering_ring,
     );
 
     // Draw error banner if needed
     if let Some(ref message) = model.error_message {
         draw_error_banner(&draw, message, window_rect);
     }
+
+    // Draw toast notifications
+    draw_toasts(&draw, &model.toasts, window_rect);
 
     // Render to frame
     draw.to_frame(app, &frame).unwrap();
@@ -250,7 +307,7 @@ fn view(app: &App, model: &Model, frame: Frame) {
 
 fn key_pressed(_app: &App, model: &mut Model, key: Key) {
     match key {
-        // Escape closes picker or quits
+        // Escape closes picker (if open)
         Key::Escape => {
             if model.picker_state.is_open {
                 model.picker_state.close();
@@ -274,9 +331,40 @@ fn key_pressed(_app: &App, model: &mut Model, key: Key) {
         Key::R => {
             model.reduced_motion = !model.reduced_motion;
             save_config(model);
+            let msg = if model.reduced_motion {
+                "Reduced motion enabled"
+            } else {
+                "Reduced motion disabled"
+            };
+            add_toast(model, msg.to_string());
+        }
+        // Arrow keys for picker navigation
+        Key::Up => {
+            if model.picker_state.is_open {
+                model.picker_state.move_selection(-1);
+            }
+        }
+        Key::Down => {
+            if model.picker_state.is_open {
+                model.picker_state.move_selection(1);
+            }
         }
         _ => {}
     }
+}
+
+fn mouse_moved(_app: &App, model: &mut Model, pos: Point2) {
+    model.mouse_pos = pos;
+}
+
+fn window_focused(_app: &App, model: &mut Model) {
+    // Resync time immediately when window regains focus
+    model.time_data = compute_time_data(model.selected_tz);
+    model.is_focused = true;
+}
+
+fn window_unfocused(_app: &App, model: &mut Model) {
+    model.is_focused = false;
 }
 
 fn raw_window_event(_app: &App, model: &mut Model, event: &nannou::winit::event::WindowEvent) {

@@ -2,8 +2,17 @@
 //!
 //! Renders the precision instrument clock visual elements using nannou's Draw API.
 
+use std::time::Instant;
+
 use nannou::prelude::*;
 use shared::{DstChange, TimeData};
+
+/// A toast notification message
+pub struct ToastMessage {
+    pub text: String,
+    pub created_at: Instant,
+    pub duration_secs: f32,
+}
 
 /// Color palette for the precision instrument theme
 pub mod colors {
@@ -58,6 +67,12 @@ pub mod colors {
         blue: 120,
         standard: std::marker::PhantomData,
     };
+    pub const TOAST_BG: Srgb<u8> = Srgb {
+        red: 50,
+        green: 50,
+        blue: 50,
+        standard: std::marker::PhantomData,
+    };
 }
 
 /// Draw the primary time readout (left panel)
@@ -72,6 +87,14 @@ pub fn draw_primary_readout(draw: &Draw, time_data: &TimeData, rect: Rect) {
     let time_x_offset = -20.0;
     let time_y = 60.0;
     
+    // Subtle glow effect behind time digits
+    draw.text(&time_str)
+        .xy(center + vec2(time_x_offset, time_y))
+        .color(srgba(0u8, 180u8, 220u8, 25u8))
+        .font_size(76)
+        .w(rect.w());
+    
+    // Main time text
     draw.text(&time_str)
         .xy(center + vec2(time_x_offset, time_y))
         .color(colors::TEXT_PRIMARY)
@@ -119,6 +142,7 @@ pub fn draw_calibration_ring(
     center: Point2,
     radius: f32,
     reduced_motion: bool,
+    is_hovering: bool,
 ) {
     let num_ticks = 60;
     let tick_length_minor = radius * 0.08;
@@ -190,6 +214,31 @@ pub fn draw_calibration_ring(
     // Draw outer ring
     draw_ring(draw, center, radius, 1.5, colors::TICK_MAJOR);
     draw_ring(draw, center, radius - tick_length_major - 5.0, 0.5, colors::TICK_NORMAL);
+    
+    // Draw tooltip when hovering
+    if is_hovering {
+        let tooltip_text = if reduced_motion {
+            "Display: 1s tick"
+        } else {
+            "System tick: 60fps / Display: 1s"
+        };
+        
+        // Tooltip background
+        let tooltip_width = 200.0;
+        let tooltip_height = 24.0;
+        let tooltip_pos = center + vec2(0.0, -radius - 30.0);
+        
+        draw.rect()
+            .xy(tooltip_pos)
+            .w_h(tooltip_width, tooltip_height)
+            .color(srgba(40u8, 40u8, 40u8, 220u8));
+        
+        draw.text(tooltip_text)
+            .xy(tooltip_pos)
+            .color(colors::TEXT_PRIMARY)
+            .font_size(12)
+            .w(tooltip_width);
+    }
 }
 
 /// Draw a ring (circle outline) using line segments
@@ -206,6 +255,46 @@ fn draw_ring(draw: &Draw, center: Point2, radius: f32, weight: f32, color: Srgb<
         .weight(weight)
         .color(color)
         .points(points);
+}
+
+/// Draw toast notifications
+pub fn draw_toasts(draw: &Draw, toasts: &[ToastMessage], window_rect: Rect) {
+    let toast_width = 280.0;
+    let toast_height = 36.0;
+    let padding = 10.0;
+    let margin = 15.0;
+    
+    for (i, toast) in toasts.iter().enumerate() {
+        let elapsed = toast.created_at.elapsed().as_secs_f32();
+        let progress = elapsed / toast.duration_secs;
+        
+        // Fade out in the last 0.5 seconds
+        let alpha = if progress > 0.8 {
+            ((1.0 - progress) / 0.2 * 255.0) as u8
+        } else {
+            255u8
+        };
+        
+        // Position from bottom-right, stacking upward
+        let y_offset = (i as f32) * (toast_height + margin);
+        let pos = pt2(
+            window_rect.right() - toast_width / 2.0 - margin,
+            window_rect.bottom() + toast_height / 2.0 + margin + y_offset + 40.0, // +40 for favorites bar
+        );
+        
+        // Background
+        draw.rect()
+            .xy(pos)
+            .w_h(toast_width, toast_height)
+            .color(srgba(colors::TOAST_BG.red, colors::TOAST_BG.green, colors::TOAST_BG.blue, alpha));
+        
+        // Text
+        draw.text(&toast.text)
+            .xy(pos)
+            .color(srgba(colors::TEXT_PRIMARY.red, colors::TEXT_PRIMARY.green, colors::TEXT_PRIMARY.blue, alpha))
+            .font_size(14)
+            .w(toast_width - padding * 2.0);
+    }
 }
 
 /// Draw DST status indicator

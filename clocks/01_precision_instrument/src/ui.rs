@@ -4,7 +4,7 @@
 
 use chrono_tz::Tz;
 use nannou_egui::egui;
-use shared::{search_timezones, DstChange, TimeData};
+use shared::{all_timezones, search_timezones, DstChange, TimeData};
 
 /// State for the timezone picker
 #[derive(Default)]
@@ -17,6 +17,10 @@ pub struct PickerState {
     pub search_results: Vec<Tz>,
     /// Whether the search field should be focused
     pub should_focus_search: bool,
+    /// Currently selected index for keyboard navigation
+    pub selected_index: Option<usize>,
+    /// Total timezone count (for "showing X of Y")
+    total_count: usize,
 }
 
 impl PickerState {
@@ -24,17 +28,57 @@ impl PickerState {
         self.is_open = true;
         self.search_query.clear();
         self.search_results = search_timezones("");
+        self.total_count = all_timezones().len();
         self.should_focus_search = true;
+        self.selected_index = None;
     }
 
     pub fn close(&mut self) {
         self.is_open = false;
         self.search_query.clear();
         self.search_results.clear();
+        self.selected_index = None;
     }
 
     pub fn update_search(&mut self) {
         self.search_results = search_timezones(&self.search_query);
+        // Reset selection when search changes
+        self.selected_index = if self.search_results.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+    }
+
+    /// Move the keyboard selection up or down
+    pub fn move_selection(&mut self, delta: i32) {
+        if self.search_results.is_empty() {
+            self.selected_index = None;
+            return;
+        }
+
+        let len = self.search_results.len();
+        self.selected_index = Some(match self.selected_index {
+            None => {
+                if delta > 0 { 0 } else { len - 1 }
+            }
+            Some(idx) => {
+                let new_idx = idx as i32 + delta;
+                if new_idx < 0 {
+                    len - 1
+                } else if new_idx >= len as i32 {
+                    0
+                } else {
+                    new_idx as usize
+                }
+            }
+        });
+    }
+
+    /// Get the currently selected timezone (for Enter key)
+    pub fn get_selected(&self) -> Option<Tz> {
+        self.selected_index
+            .and_then(|idx| self.search_results.get(idx).copied())
     }
 }
 
@@ -128,15 +172,20 @@ pub fn draw_timezone_picker(
                 ui.separator();
             }
 
-            // Results list
-            ui.label(format!("{} time zones found", picker_state.search_results.len()));
+            // Results list with count
+            ui.label(format!(
+                "Showing {} of {} time zones",
+                picker_state.search_results.len(),
+                picker_state.total_count
+            ));
             
             egui::ScrollArea::vertical()
                 .max_height(300.0)
                 .show(ui, |ui| {
-                    for &tz in &picker_state.search_results {
+                    for (idx, &tz) in picker_state.search_results.iter().enumerate() {
                         let is_current = tz == current_tz;
                         let is_favorite = favorites.contains(&tz);
+                        let is_keyboard_selected = picker_state.selected_index == Some(idx);
                         
                         ui.horizontal(|ui| {
                             // Star button for favorites
@@ -145,13 +194,24 @@ pub fn draw_timezone_picker(
                                 result.toggle_favorite = Some(tz);
                             }
                             
-                            // Timezone name
+                            // Timezone name - highlight if keyboard selected
                             let label = if is_current {
                                 format!("{} ◀", tz.name())
                             } else {
                                 tz.name().to_string()
                             };
-                            if ui.selectable_label(is_current, &label).clicked() {
+                            
+                            let response = ui.selectable_label(
+                                is_current || is_keyboard_selected,
+                                &label,
+                            );
+                            
+                            // Scroll to keyboard-selected item
+                            if is_keyboard_selected {
+                                response.scroll_to_me(Some(egui::Align::Center));
+                            }
+                            
+                            if response.clicked() {
                                 result.selected_tz = Some(tz);
                                 result.close_picker = true;
                             }
@@ -161,26 +221,36 @@ pub fn draw_timezone_picker(
 
             ui.separator();
 
+            // Keyboard hint
+            ui.label("↑↓ Navigate · Enter Select · Esc Close");
+
+            ui.separator();
+
             // Close button
             if ui.button("Close").clicked() {
                 result.close_picker = true;
             }
         });
 
-    // Handle escape key
-    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        result.close_picker = true;
-    }
+    // Handle Enter key in picker (Escape is handled in main.rs key_pressed)
+    ctx.input(|i| {
+        if i.key_pressed(egui::Key::Enter) {
+            if let Some(tz) = picker_state.get_selected() {
+                result.selected_tz = Some(tz);
+                result.close_picker = true;
+            }
+        }
+    });
 
     result
 }
 
 /// Draw the DST status card
-pub fn draw_dst_status_card(ctx: &egui::Context, time_data: &TimeData) {
+pub fn draw_dst_status_card(ctx: &egui::Context, time_data: &TimeData, selected_tz: Tz) {
     egui::Window::new("DST Status")
         .collapsible(true)
         .resizable(false)
-        .default_width(250.0)
+        .default_width(280.0)
         .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
         .show(ctx, |ui| {
             // Current DST status
@@ -204,27 +274,31 @@ pub fn draw_dst_status_card(ctx: &egui::Context, time_data: &TimeData) {
                     let direction = if *delta_minutes > 0 { "forward" } else { "back" };
                     ui.colored_label(
                         egui::Color32::from_rgb(255, 180, 0),
-                        format!("⚠ Upcoming DST Change"),
+                        "⚠ Upcoming DST Change".to_string(),
                     );
                     ui.label(format!(
                         "Clocks will move {} by {} minutes",
                         direction,
                         delta_minutes.abs()
                     ));
-                    ui.label(format!("At: {}", instant.format("%Y-%m-%d %H:%M UTC")));
+                    // Show in local time
+                    let local_time = instant.with_timezone(&selected_tz);
+                    ui.label(format!("At: {}", local_time.format("%b %d, %Y %I:%M %p (local)")));
                 }
                 DstChange::JustOccurred { instant, delta_minutes } => {
                     let direction = if *delta_minutes > 0 { "forward" } else { "back" };
                     ui.colored_label(
                         egui::Color32::from_rgb(0, 212, 255),
-                        format!("ℹ Recent DST Change"),
+                        "ℹ Recent DST Change".to_string(),
                     );
                     ui.label(format!(
                         "Clocks moved {} by {} minutes",
                         direction,
                         delta_minutes.abs()
                     ));
-                    ui.label(format!("At: {}", instant.format("%Y-%m-%d %H:%M UTC")));
+                    // Show in local time
+                    let local_time = instant.with_timezone(&selected_tz);
+                    ui.label(format!("At: {}", local_time.format("%b %d, %Y %I:%M %p (local)")));
                 }
             }
         });
@@ -281,6 +355,8 @@ pub fn draw_settings_panel(ctx: &egui::Context, reduced_motion: &mut bool) -> bo
                 changed = true;
             }
             ui.label("Disables continuous animations");
+            ui.separator();
+            ui.label("Press R to toggle");
         });
 
     changed
@@ -304,7 +380,7 @@ pub fn draw_timezone_bar(ctx: &egui::Context, time_data: &TimeData) -> bool {
                 
                 if ui
                     .add(egui::Label::new(&tz_text).sense(egui::Sense::click()))
-                    .on_hover_text("Click to change time zone")
+                    .on_hover_text("Click to change time zone (or press Space)")
                     .clicked()
                 {
                     clicked = true;
