@@ -33,3 +33,6 @@ context/nannou-docs/
 
 # Logs
 *.log
+
+# Cursor
+.cursor/
