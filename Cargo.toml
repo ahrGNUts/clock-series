@@ -5,6 +5,7 @@ members = [
     "clocks/01_precision_instrument",
     "clocks/02_worldline_ribbon",
     "clocks/03_temporal_topography",
+    "clocks/04_chrono_superposition",
 ]
 
 [workspace.dependencies]
