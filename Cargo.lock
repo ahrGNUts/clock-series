@@ -2376,6 +2376,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "temporal_grammar"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "nannou",
+ "nannou_egui",
+ "serde",
+ "shared",
+]
+
+[[package]]
 name = "temporal_topography"
 version = "0.1.0"
 dependencies = [

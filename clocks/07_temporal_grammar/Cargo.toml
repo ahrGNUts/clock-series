@@ -1,0 +1,13 @@
+[package]
+name = "temporal_grammar"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shared = { path = "../../shared" }
+nannou = { workspace = true }
+nannou_egui = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+serde = { workspace = true }
+
